@@ -2,3 +2,4 @@ poweroffd
 poweroff-send
 *.o
 *.d
+.deb
