@@ -1,0 +1,25 @@
+[Unit]
+Description=Power-Off Daemon (WoL-style remote shutdown)
+Documentation=man:poweroffd(8)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/local/sbin/poweroffd -c /etc/poweroffd.conf
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/run/poweroffd.pid
+Restart=on-failure
+RestartSec=5
+
+# Hardening (systemd-level, supplements in-process privilege drop)
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=false
+ReadWritePaths=/run
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SYS_BOOT CAP_SETUID CAP_SETGID CAP_SETPCAP
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SYS_BOOT CAP_SETUID CAP_SETGID CAP_SETPCAP
+
+[Install]
+WantedBy=multi-user.target
