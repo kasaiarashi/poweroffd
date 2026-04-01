@@ -3,3 +3,10 @@ poweroff-send
 *.o
 *.d
 .deb
+
+# Windows build artifacts
+windows/build/
+windows/*.exe
+windows/*.obj
+windows/*.pdb
+windows/*.ilk
