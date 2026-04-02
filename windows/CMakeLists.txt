@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Daemon (Windows Service)
 add_executable(poweroffd poweroffd-win.cpp)
-target_link_libraries(poweroffd PRIVATE ws2_32 bcrypt advapi32 user32)
+target_link_libraries(poweroffd PRIVATE ws2_32 bcrypt advapi32 user32 wtsapi32 userenv)
 target_compile_definitions(poweroffd PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
 
 # Client

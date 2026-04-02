@@ -23,7 +23,7 @@ if errorlevel 1 (
         rmdir /s /q build 2>nul
 
         echo Compiling poweroffd.exe...
-        cl /std:c++17 /O2 /EHsc /W4 /Fe:poweroffd.exe poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib user32.lib
+        cl /std:c++17 /O2 /EHsc /W4 /Fe:poweroffd.exe poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib user32.lib wtsapi32.lib userenv.lib
         if errorlevel 1 goto :fail
 
         echo Compiling poweroff-send.exe...

@@ -33,6 +33,11 @@
 #include <ws2tcpip.h>
 #include <bcrypt.h>
 #include <sddl.h>
+#include <wtsapi32.h>
+#include <userenv.h>
+
+#pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "userenv.lib")
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "bcrypt.lib")
@@ -475,9 +480,56 @@ static void execute_shutdown() {
 
 static void execute_lock() {
     log_msg(LOG_INFO, "Locking workstation");
-    if (!LockWorkStation()) {
-        log_msg(LOG_ERROR, "LockWorkStation failed: %lu", GetLastError());
+
+    // Services run in session 0 — LockWorkStation() can't reach the user desktop.
+    // Instead, get the active console session and spawn rundll32 there.
+    DWORD sessionId = WTSGetActiveConsoleSessionId();
+    if (sessionId == 0xFFFFFFFF) {
+        log_msg(LOG_ERROR, "No active console session to lock");
+        return;
     }
+
+    HANDLE hToken = nullptr;
+    if (!WTSQueryUserToken(sessionId, &hToken)) {
+        log_msg(LOG_ERROR, "WTSQueryUserToken failed: %lu", GetLastError());
+        return;
+    }
+
+    HANDLE hDupToken = nullptr;
+    if (!DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr,
+                          SecurityIdentification, TokenPrimary, &hDupToken)) {
+        log_msg(LOG_ERROR, "DuplicateTokenEx failed: %lu", GetLastError());
+        CloseHandle(hToken);
+        return;
+    }
+
+    LPVOID pEnv = nullptr;
+    CreateEnvironmentBlock(&pEnv, hDupToken, FALSE);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.lpDesktop = (LPSTR)"winsta0\\default";
+    PROCESS_INFORMATION pi{};
+
+    char cmd[] = "rundll32.exe user32.dll,LockWorkStation";
+
+    BOOL ok = CreateProcessAsUserA(
+        hDupToken, nullptr, cmd,
+        nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+        pEnv, nullptr, &si, &pi);
+
+    if (ok) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        log_msg(LOG_INFO, "Workstation locked (session %lu)", sessionId);
+    } else {
+        log_msg(LOG_ERROR, "CreateProcessAsUser failed: %lu", GetLastError());
+    }
+
+    if (pEnv) DestroyEnvironmentBlock(pEnv);
+    CloseHandle(hDupToken);
+    CloseHandle(hToken);
 }
 
 // ---------------------------------------------------------------------------
