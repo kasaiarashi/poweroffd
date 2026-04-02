@@ -116,14 +116,26 @@ delay = 5
         Write-Host "==> Added $InstallDir to system PATH"
     }
 
-    # Firewall rule
+    # Firewall rule — read port from config
+    $fwPort = 9
+    if (Test-Path $ConfigFile) {
+        $portLine = Get-Content $ConfigFile | Where-Object { $_ -match '^\s*port\s*=' }
+        if ($portLine) {
+            $fwPort = [int]($portLine -replace '^\s*port\s*=\s*', '').Trim()
+        }
+    }
     $ruleName = "poweroffd (UDP-in)"
-    if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) {
+    $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+    if ($existing) {
+        # Update port if changed
+        Set-NetFirewallRule -DisplayName $ruleName -LocalPort $fwPort
+        Write-Host "==> Firewall rule updated (UDP port $fwPort)"
+    } else {
         New-NetFirewallRule -DisplayName $ruleName `
-            -Direction Inbound -Protocol UDP -LocalPort 9 `
+            -Direction Inbound -Protocol UDP -LocalPort $fwPort `
             -Action Allow -Profile Any `
             -Description "Allow incoming WoL magic packets for poweroffd" | Out-Null
-        Write-Host "==> Firewall rule created (UDP port 9)"
+        Write-Host "==> Firewall rule created (UDP port $fwPort)"
     }
 
     Write-Host ""

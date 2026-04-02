@@ -81,6 +81,8 @@ struct Config {
     std::string                     bind_addr = "0.0.0.0";
     std::array<uint8_t, MAC_LEN>   mac{};
     bool                            mac_set = false;
+    std::array<uint8_t, MAC_LEN>   lock_mac{};
+    bool                            lock_mac_set = false;
     std::string                     secret;
     int                             delay  = DEFAULT_DELAY;
     std::string                     user   = "nobody";
@@ -172,6 +174,12 @@ static bool load_config(const std::string& path, Config& cfg) {
                 return false;
             }
             cfg.mac_set = true;
+        } else if (key == "lock_mac") {
+            if (!parse_mac(val, cfg.lock_mac)) {
+                log_msg(LOG_ERR, "%s:%d: invalid lock_mac '%s'", path.c_str(), lineno, val.c_str());
+                return false;
+            }
+            cfg.lock_mac_set = true;
         } else if (key == "secret") {
             cfg.secret = val;
         } else if (key == "delay") {
@@ -308,9 +316,12 @@ static bool drop_privileges(const Config& cfg) {
 // Packet validation
 // ---------------------------------------------------------------------------
 
+enum PacketAction { ACTION_NONE, ACTION_SHUTDOWN, ACTION_LOCK };
+
 struct PacketResult {
     bool valid              = false;
     bool auth_ok            = false;
+    PacketAction action     = ACTION_NONE;
     std::array<uint8_t, MAC_LEN> target_mac{};
 };
 
@@ -338,8 +349,16 @@ static PacketResult validate_packet(const uint8_t* buf, ssize_t len, const Confi
 
     result.valid = true;
 
-    // Check MAC filter
-    if (cfg.mac_set && result.target_mac != cfg.mac) {
+    // Determine action based on which MAC matched
+    if (cfg.lock_mac_set && result.target_mac == cfg.lock_mac) {
+        result.action = ACTION_LOCK;
+    } else if (cfg.mac_set && result.target_mac == cfg.mac) {
+        result.action = ACTION_SHUTDOWN;
+    } else if (!cfg.mac_set && !cfg.lock_mac_set) {
+        result.action = ACTION_SHUTDOWN;
+    } else if (!cfg.mac_set && cfg.lock_mac_set) {
+        result.action = ACTION_SHUTDOWN;
+    } else {
         result.valid = false;
         return result;
     }
@@ -347,12 +366,10 @@ static PacketResult validate_packet(const uint8_t* buf, ssize_t len, const Confi
     // HMAC authentication
     if (!cfg.secret.empty()) {
         if (len < static_cast<ssize_t>(MAX_PACKET_LEN)) {
-            // Packet is valid WoL but missing HMAC tag
             result.auth_ok = false;
             return result;
         }
 
-        // Compute HMAC-SHA256 over the WoL payload (first 102 bytes)
         unsigned char expected[HMAC_TAG_LEN];
         unsigned int  out_len = 0;
 
@@ -361,7 +378,6 @@ static PacketResult validate_packet(const uint8_t* buf, ssize_t len, const Confi
              buf, WOL_PAYLOAD_LEN,
              expected, &out_len);
 
-        // Constant-time comparison
         if (out_len == HMAC_TAG_LEN &&
             CRYPTO_memcmp(expected, buf + WOL_PAYLOAD_LEN, HMAC_TAG_LEN) == 0) {
             result.auth_ok = true;
@@ -369,7 +385,6 @@ static PacketResult validate_packet(const uint8_t* buf, ssize_t len, const Confi
             result.auth_ok = false;
         }
     } else {
-        // No secret configured — authentication not required
         result.auth_ok = true;
     }
 
@@ -426,6 +441,23 @@ static void execute_shutdown() {
     log_msg(LOG_ERR, "reboot() failed: %s — falling back to /sbin/poweroff", strerror(errno));
     execl("/sbin/poweroff", "poweroff", nullptr);
     log_msg(LOG_ERR, "execl(/sbin/poweroff) failed: %s", strerror(errno));
+}
+
+// ---------------------------------------------------------------------------
+// Lock screen
+// ---------------------------------------------------------------------------
+
+static void execute_lock() {
+    log_msg(LOG_NOTICE, "Locking screen");
+    // Try loginctl first (works with systemd-logind)
+    int ret = system("loginctl lock-sessions 2>/dev/null");
+    if (ret != 0) {
+        // Fallback for display managers
+        ret = system("dm-tool lock 2>/dev/null");
+        if (ret != 0) {
+            log_msg(LOG_ERR, "Failed to lock screen (tried loginctl and dm-tool)");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -573,9 +605,10 @@ int main(int argc, char* argv[]) {
         log_msg(LOG_WARNING, "Not running as root — cannot drop privileges or guarantee shutdown capability");
     }
 
-    log_msg(LOG_INFO, "poweroffd ready (port=%d mac=%s hmac=%s delay=%ds)",
+    log_msg(LOG_INFO, "poweroffd ready (port=%d mac=%s lock_mac=%s hmac=%s delay=%ds)",
             cfg.port,
             cfg.mac_set ? mac_to_string(cfg.mac).c_str() : "ANY",
+            cfg.lock_mac_set ? mac_to_string(cfg.lock_mac).c_str() : "off",
             cfg.secret.empty() ? "off" : "on",
             cfg.delay);
 
@@ -594,13 +627,16 @@ int main(int argc, char* argv[]) {
             new_cfg.foreground = cfg.foreground;
             new_cfg.pid_file = cfg.pid_file;
             if (load_config(conf_path, new_cfg)) {
-                // Can reload: mac, secret, delay. Cannot change port/bind without restart.
-                cfg.mac     = new_cfg.mac;
-                cfg.mac_set = new_cfg.mac_set;
-                cfg.secret  = new_cfg.secret;
-                cfg.delay   = new_cfg.delay;
-                log_msg(LOG_INFO, "Config reloaded (mac=%s hmac=%s delay=%ds)",
+                // Can reload: mac, lock_mac, secret, delay. Cannot change port/bind without restart.
+                cfg.mac          = new_cfg.mac;
+                cfg.mac_set      = new_cfg.mac_set;
+                cfg.lock_mac     = new_cfg.lock_mac;
+                cfg.lock_mac_set = new_cfg.lock_mac_set;
+                cfg.secret       = new_cfg.secret;
+                cfg.delay        = new_cfg.delay;
+                log_msg(LOG_INFO, "Config reloaded (mac=%s lock_mac=%s hmac=%s delay=%ds)",
                         cfg.mac_set ? mac_to_string(cfg.mac).c_str() : "ANY",
+                        cfg.lock_mac_set ? mac_to_string(cfg.lock_mac).c_str() : "off",
                         cfg.secret.empty() ? "off" : "on",
                         cfg.delay);
             }
@@ -626,6 +662,7 @@ int main(int argc, char* argv[]) {
                     Config new_cfg;
                     if (load_config(conf_path, new_cfg)) {
                         cfg.mac = new_cfg.mac; cfg.mac_set = new_cfg.mac_set;
+                        cfg.lock_mac = new_cfg.lock_mac; cfg.lock_mac_set = new_cfg.lock_mac_set;
                         cfg.secret = new_cfg.secret; cfg.delay = new_cfg.delay;
                     }
                 }
@@ -681,11 +718,14 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        log_msg(LOG_NOTICE, "Valid shutdown packet from %s:%d for MAC %s",
+        log_msg(LOG_NOTICE, "Valid %s packet from %s:%d for MAC %s",
+                result.action == ACTION_LOCK ? "lock" : "shutdown",
                 src_ip, ntohs(src_addr.sin_port),
                 mac_to_string(result.target_mac).c_str());
 
-        if (cfg.delay > 0) {
+        if (result.action == ACTION_LOCK) {
+            execute_lock();
+        } else if (cfg.delay > 0) {
             g_shutdown_pending = true;
             g_shutdown_countdown = cfg.delay;
             log_msg(LOG_CRIT, "System shutdown initiated — %d second delay (SIGHUP to cancel)",

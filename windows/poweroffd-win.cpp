@@ -90,6 +90,8 @@ struct Config {
     std::string                     bind_addr = "0.0.0.0";
     std::array<uint8_t, MAC_LEN>   mac{};
     bool                            mac_set = false;
+    std::array<uint8_t, MAC_LEN>   lock_mac{};
+    bool                            lock_mac_set = false;
     std::string                     secret;
     int                             delay  = DEFAULT_DELAY;
     bool                            foreground = false;
@@ -273,6 +275,12 @@ static bool load_config(const std::string& path, Config& cfg) {
                 return false;
             }
             cfg.mac_set = true;
+        } else if (key == "lock_mac") {
+            if (!parse_mac(val, cfg.lock_mac)) {
+                log_msg(LOG_ERROR, "%s:%d: invalid lock_mac '%s'", path.c_str(), lineno, val.c_str());
+                return false;
+            }
+            cfg.lock_mac_set = true;
         } else if (key == "secret") {
             cfg.secret = val;
         } else if (key == "delay") {
@@ -291,9 +299,12 @@ static bool load_config(const std::string& path, Config& cfg) {
 // Packet validation
 // ---------------------------------------------------------------------------
 
+enum PacketAction { ACTION_NONE, ACTION_SHUTDOWN, ACTION_LOCK };
+
 struct PacketResult {
     bool valid              = false;
     bool auth_ok            = false;
+    PacketAction action     = ACTION_NONE;
     std::array<uint8_t, MAC_LEN> target_mac{};
 };
 
@@ -320,8 +331,17 @@ static PacketResult validate_packet(const uint8_t* buf, int len, const Config& c
 
     result.valid = true;
 
-    // Check MAC filter
-    if (cfg.mac_set && result.target_mac != cfg.mac) {
+    // Determine action based on which MAC matched
+    if (cfg.lock_mac_set && result.target_mac == cfg.lock_mac) {
+        result.action = ACTION_LOCK;
+    } else if (cfg.mac_set && result.target_mac == cfg.mac) {
+        result.action = ACTION_SHUTDOWN;
+    } else if (!cfg.mac_set && !cfg.lock_mac_set) {
+        result.action = ACTION_SHUTDOWN; // No filter — default to shutdown
+    } else if (!cfg.mac_set && cfg.lock_mac_set) {
+        result.action = ACTION_SHUTDOWN; // lock_mac set but mac not — non-lock packets shutdown
+    } else {
+        // Both set, but matched neither
         result.valid = false;
         return result;
     }
@@ -450,6 +470,17 @@ static void execute_shutdown() {
 }
 
 // ---------------------------------------------------------------------------
+// Lock screen
+// ---------------------------------------------------------------------------
+
+static void execute_lock() {
+    log_msg(LOG_INFO, "Locking workstation");
+    if (!LockWorkStation()) {
+        log_msg(LOG_ERROR, "LockWorkStation failed: %lu", GetLastError());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Rate limiting
 // ---------------------------------------------------------------------------
 
@@ -501,9 +532,10 @@ static void run_daemon(Config& cfg) {
         return;
     }
 
-    log_msg(LOG_INFO, "poweroffd ready (port=%d mac=%s hmac=%s delay=%ds)",
+    log_msg(LOG_INFO, "poweroffd ready (port=%d mac=%s lock_mac=%s hmac=%s delay=%ds)",
             cfg.port,
             cfg.mac_set ? mac_to_string(cfg.mac).c_str() : "ANY",
+            cfg.lock_mac_set ? mac_to_string(cfg.lock_mac).c_str() : "off",
             cfg.secret.empty() ? "off" : "on",
             cfg.delay);
 
@@ -517,12 +549,15 @@ static void run_daemon(Config& cfg) {
             Config new_cfg;
             new_cfg.foreground = cfg.foreground;
             if (load_config(g_conf_path, new_cfg)) {
-                cfg.mac     = new_cfg.mac;
-                cfg.mac_set = new_cfg.mac_set;
-                cfg.secret  = new_cfg.secret;
-                cfg.delay   = new_cfg.delay;
-                log_msg(LOG_INFO, "Config reloaded (mac=%s hmac=%s delay=%ds)",
+                cfg.mac          = new_cfg.mac;
+                cfg.mac_set      = new_cfg.mac_set;
+                cfg.lock_mac     = new_cfg.lock_mac;
+                cfg.lock_mac_set = new_cfg.lock_mac_set;
+                cfg.secret       = new_cfg.secret;
+                cfg.delay        = new_cfg.delay;
+                log_msg(LOG_INFO, "Config reloaded (mac=%s lock_mac=%s hmac=%s delay=%ds)",
                         cfg.mac_set ? mac_to_string(cfg.mac).c_str() : "ANY",
+                        cfg.lock_mac_set ? mac_to_string(cfg.lock_mac).c_str() : "off",
                         cfg.secret.empty() ? "off" : "on",
                         cfg.delay);
             }
@@ -554,6 +589,7 @@ static void run_daemon(Config& cfg) {
                     Config new_cfg;
                     if (load_config(g_conf_path, new_cfg)) {
                         cfg.mac = new_cfg.mac; cfg.mac_set = new_cfg.mac_set;
+                        cfg.lock_mac = new_cfg.lock_mac; cfg.lock_mac_set = new_cfg.lock_mac_set;
                         cfg.secret = new_cfg.secret; cfg.delay = new_cfg.delay;
                     }
                 }
@@ -609,11 +645,14 @@ static void run_daemon(Config& cfg) {
             continue;
         }
 
-        log_msg(LOG_INFO, "Valid shutdown packet from %s:%d for MAC %s",
+        log_msg(LOG_INFO, "Valid %s packet from %s:%d for MAC %s",
+                result.action == ACTION_LOCK ? "lock" : "shutdown",
                 src_ip, ntohs(src_addr.sin_port),
                 mac_to_string(result.target_mac).c_str());
 
-        if (cfg.delay > 0) {
+        if (result.action == ACTION_LOCK) {
+            execute_lock();
+        } else if (cfg.delay > 0) {
             g_shutdown_pending = true;
             g_shutdown_countdown = cfg.delay;
             log_msg(LOG_CRITICAL, "System shutdown initiated — %d second delay", cfg.delay);

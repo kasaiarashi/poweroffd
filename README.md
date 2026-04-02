@@ -10,6 +10,7 @@ Standard WoL magic packet: 6 bytes of `0xFF` followed by the target MAC address 
 
 - HMAC-SHA256 packet authentication (optional but recommended)
 - MAC address allowlist filtering
+- Lock screen via separate `lock_mac` — send a different MAC to lock instead of shutdown
 - Rate limiting to prevent abuse
 - Configurable shutdown delay with cancellation
 - Cross-platform: Linux (systemd) and Windows (SCM service)
@@ -41,6 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/kasaiarashi/poweroffd/main/install.
 port = 9
 bind = 0.0.0.0
 mac = AA:BB:CC:DD:EE:FF
+lock_mac = BB:CC:DD:EE:FF:00
 secret = your-hmac-secret-here
 delay = 5
 user = nobody
@@ -90,7 +92,7 @@ Or compile manually:
 
 ```batch
 cd windows
-cl /std:c++17 /O2 /EHsc poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib
+cl /std:c++17 /O2 /EHsc poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib user32.lib
 cl /std:c++17 /O2 /EHsc poweroff-send-win.cpp /link ws2_32.lib bcrypt.lib
 ```
 
@@ -116,6 +118,7 @@ This will:
 port = 9
 bind = 0.0.0.0
 mac = AA:BB:CC:DD:EE:FF
+lock_mac = BB:CC:DD:EE:FF:00
 secret = your-hmac-secret-here
 delay = 5
 ```
