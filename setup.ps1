@@ -106,7 +106,7 @@ delay = 5
         # Recovery: restart on failure
         & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000
     } else {
-        Set-Service -Name $ServiceName -BinaryPathName $binPath
+        & sc.exe config $ServiceName binPath= "$binPath"
     }
 
     # Add to PATH
@@ -116,27 +116,7 @@ delay = 5
         Write-Host "==> Added $InstallDir to system PATH"
     }
 
-    # Firewall rule — read port from config
-    $fwPort = 9
-    if (Test-Path $ConfigFile) {
-        $portLine = Get-Content $ConfigFile | Where-Object { $_ -match '^\s*port\s*=' }
-        if ($portLine) {
-            $fwPort = [int]($portLine -replace '^\s*port\s*=\s*', '').Trim()
-        }
-    }
-    $ruleName = "poweroffd (UDP-in)"
-    $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-    if ($existing) {
-        # Update port if changed
-        Set-NetFirewallRule -DisplayName $ruleName -LocalPort $fwPort
-        Write-Host "==> Firewall rule updated (UDP port $fwPort)"
-    } else {
-        New-NetFirewallRule -DisplayName $ruleName `
-            -Direction Inbound -Protocol UDP -LocalPort $fwPort `
-            -Action Allow -Profile Any `
-            -Description "Allow incoming WoL magic packets for poweroffd" | Out-Null
-        Write-Host "==> Firewall rule created (UDP port $fwPort)"
-    }
+    # Firewall rule is managed by the service on startup (reads port from config)
 
     Write-Host ""
     Write-Host "==> Done!" -ForegroundColor Green

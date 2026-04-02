@@ -515,10 +515,37 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Firewall management
+// ---------------------------------------------------------------------------
+
+static void ensure_firewall_rule(uint16_t port) {
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    // Delete existing rule (ignore errors if it doesn't exist)
+    std::string del_cmd = "netsh advfirewall firewall delete rule name=\"poweroffd (UDP-in)\" >nul 2>&1";
+    system(del_cmd.c_str());
+
+    // Create rule for the configured port
+    std::string add_cmd = std::string("netsh advfirewall firewall add rule name=\"poweroffd (UDP-in)\" ")
+        + "dir=in action=allow protocol=UDP localport=" + port_str
+        + " description=\"Allow incoming WoL magic packets for poweroffd\" >nul 2>&1";
+
+    if (system(add_cmd.c_str()) == 0) {
+        log_msg(LOG_INFO, "Firewall rule set for UDP port %d", port);
+    } else {
+        log_msg(LOG_WARNING, "Failed to set firewall rule for UDP port %d", port);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main daemon loop
 // ---------------------------------------------------------------------------
 
 static void run_daemon(Config& cfg) {
+    // Ensure firewall allows our port
+    ensure_firewall_rule(cfg.port);
+
     // Initialize Winsock
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
