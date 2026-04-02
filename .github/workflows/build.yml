@@ -42,15 +42,18 @@ jobs:
 
       - name: Build
         working-directory: windows
+        shell: cmd
         run: |
-          cl /std:c++17 /O2 /EHsc /W4 /Fe:poweroffd.exe poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib
-          cl /std:c++17 /O2 /EHsc /W4 /Fe:poweroff-send.exe poweroff-send-win.cpp /link ws2_32.lib bcrypt.lib
+          cl /std:c++17 /O2 /EHsc /W4 /Fepoweroffd.exe poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib
+          cl /std:c++17 /O2 /EHsc /W4 /Fepoweroff-send.exe poweroff-send-win.cpp /link ws2_32.lib bcrypt.lib
+          dir *.exe
 
       - name: Package
         if: startsWith(github.ref, 'refs/tags/v')
         working-directory: windows
         shell: pwsh
         run: |
+          Get-ChildItem *.exe
           $version = "${{ github.ref_name }}".TrimStart("v")
           $zipName = "poweroffd_${version}_win-x64.zip"
           Compress-Archive -Path poweroffd.exe, poweroff-send.exe, poweroffd.conf -DestinationPath $zipName
