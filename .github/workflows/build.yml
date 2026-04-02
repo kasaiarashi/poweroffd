@@ -1,0 +1,87 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential libcap-dev libssl-dev
+
+      - name: Build
+        run: make
+
+      - name: Build .deb package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash packaging/build-deb.sh "$VERSION"
+
+      - name: Upload .deb artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: "*.deb"
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build
+        working-directory: windows
+        run: |
+          cl /std:c++17 /O2 /EHsc /W4 /Fe:poweroffd.exe poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib
+          cl /std:c++17 /O2 /EHsc /W4 /Fe:poweroff-send.exe poweroff-send-win.cpp /link ws2_32.lib bcrypt.lib
+
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: windows
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $zipName = "poweroffd_${version}_win-x64.zip"
+          Compress-Archive -Path poweroffd.exe, poweroff-send.exe, poweroffd.conf -DestinationPath $zipName
+
+      - name: Upload Windows artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: "windows/*.zip"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Upload all .deb and .zip files to the existing release
+          for f in artifacts/linux-deb/*.deb artifacts/windows-zip/*.zip; do
+            echo "Uploading $f..."
+            gh release upload "${{ github.ref_name }}" "$f" --clobber
+          done
