@@ -74,12 +74,11 @@ delay = 5
     # Install service
     $binPath = "`"$InstallDir\poweroffd.exe`" -c `"$ConfigFile`""
 
-    & sc.exe create $ServiceName `
-        binPath= $binPath `
-        start= auto `
-        DisplayName= "Power-Off Daemon (WoL-style remote shutdown)"
-
-    & sc.exe description $ServiceName "WoL-style remote shutdown daemon. Listens for magic packets and shuts down the system."
+    New-Service -Name $ServiceName `
+        -BinaryPathName $binPath `
+        -DisplayName "Power-Off Daemon (WoL-style remote shutdown)" `
+        -StartupType Automatic `
+        -Description "WoL-style remote shutdown daemon. Listens for magic packets and shuts down the system."
 
     # Recovery: restart on failure
     & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000
