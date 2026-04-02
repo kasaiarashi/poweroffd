@@ -37,6 +37,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "user32.lib")
 
 // ---------------------------------------------------------------------------
 // Constants
