@@ -10,3 +10,6 @@ windows/*.exe
 windows/*.obj
 windows/*.pdb
 windows/*.ilk
+
+# Rust GUI build artifacts
+windows/gui/target/
