@@ -40,13 +40,31 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Build
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows/gui -> target
+
+      - name: Build daemon and CLI
         working-directory: windows
         shell: cmd
         run: |
           cl /std:c++17 /O2 /EHsc /W4 /Fepoweroffd.exe poweroffd-win.cpp /link ws2_32.lib bcrypt.lib advapi32.lib user32.lib wtsapi32.lib userenv.lib
           cl /std:c++17 /O2 /EHsc /W4 /Fepoweroff-send.exe poweroff-send-win.cpp /link ws2_32.lib bcrypt.lib
           dir *.exe
+
+      - name: Build GUI
+        working-directory: windows/gui
+        shell: cmd
+        run: cargo build --release --locked
+
+      - name: Stage GUI binary
+        working-directory: windows
+        shell: pwsh
+        run: Copy-Item gui/target/release/poweroffd-gui.exe .
 
       - name: Package
         if: startsWith(github.ref, 'refs/tags/v')
@@ -56,7 +74,7 @@ jobs:
           Get-ChildItem *.exe
           $version = "${{ github.ref_name }}".TrimStart("v")
           $zipName = "poweroffd_${version}_win-x64.zip"
-          Compress-Archive -Path poweroffd.exe, poweroff-send.exe, poweroffd.conf -DestinationPath $zipName
+          Compress-Archive -Path poweroffd.exe, poweroff-send.exe, poweroffd-gui.exe, poweroffd.conf -DestinationPath $zipName
 
       - name: Upload Windows artifact
         if: startsWith(github.ref, 'refs/tags/v')
