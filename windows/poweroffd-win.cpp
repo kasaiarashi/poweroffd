@@ -56,7 +56,7 @@ static constexpr size_t HMAC_TAG_LEN        = 32;   // SHA-256
 static constexpr size_t MAX_PACKET_LEN      = WOL_PAYLOAD_LEN + HMAC_TAG_LEN;        // 134
 static constexpr int    DEFAULT_PORT        = 9;
 static constexpr int    DEFAULT_DELAY       = 5;
-static constexpr int    RATE_LIMIT_SECS     = 10;
+static constexpr int    RATE_LIMIT_SECS     = 1;
 
 static const char SERVICE_NAME[]    = "poweroffd";
 static const char SERVICE_DISPLAY[] = "Power-Off Daemon (WoL-style remote shutdown)";
@@ -97,6 +97,9 @@ struct Config {
     bool                            mac_set = false;
     std::array<uint8_t, MAC_LEN>   lock_mac{};
     bool                            lock_mac_set = false;
+    std::array<uint8_t, MAC_LEN>   unlock_mac{};
+    bool                            unlock_mac_set = false;
+    std::string                     unlock_password;
     std::string                     secret;
     int                             delay  = DEFAULT_DELAY;
     bool                            foreground = false;
@@ -286,6 +289,14 @@ static bool load_config(const std::string& path, Config& cfg) {
                 return false;
             }
             cfg.lock_mac_set = true;
+        } else if (key == "unlock_mac") {
+            if (!parse_mac(val, cfg.unlock_mac)) {
+                log_msg(LOG_ERROR, "%s:%d: invalid unlock_mac '%s'", path.c_str(), lineno, val.c_str());
+                return false;
+            }
+            cfg.unlock_mac_set = true;
+        } else if (key == "unlock_password") {
+            cfg.unlock_password = val;
         } else if (key == "secret") {
             cfg.secret = val;
         } else if (key == "delay") {
@@ -304,7 +315,7 @@ static bool load_config(const std::string& path, Config& cfg) {
 // Packet validation
 // ---------------------------------------------------------------------------
 
-enum PacketAction { ACTION_NONE, ACTION_SHUTDOWN, ACTION_LOCK };
+enum PacketAction { ACTION_NONE, ACTION_SHUTDOWN, ACTION_LOCK, ACTION_UNLOCK };
 
 struct PacketResult {
     bool valid              = false;
@@ -337,16 +348,18 @@ static PacketResult validate_packet(const uint8_t* buf, int len, const Config& c
     result.valid = true;
 
     // Determine action based on which MAC matched
-    if (cfg.lock_mac_set && result.target_mac == cfg.lock_mac) {
+    if (cfg.unlock_mac_set && result.target_mac == cfg.unlock_mac) {
+        result.action = ACTION_UNLOCK;
+    } else if (cfg.lock_mac_set && result.target_mac == cfg.lock_mac) {
         result.action = ACTION_LOCK;
     } else if (cfg.mac_set && result.target_mac == cfg.mac) {
         result.action = ACTION_SHUTDOWN;
-    } else if (!cfg.mac_set && !cfg.lock_mac_set) {
+    } else if (!cfg.mac_set && !cfg.lock_mac_set && !cfg.unlock_mac_set) {
         result.action = ACTION_SHUTDOWN; // No filter — default to shutdown
-    } else if (!cfg.mac_set && cfg.lock_mac_set) {
-        result.action = ACTION_SHUTDOWN; // lock_mac set but mac not — non-lock packets shutdown
+    } else if (!cfg.mac_set) {
+        result.action = ACTION_SHUTDOWN; // lock_mac or unlock_mac set but mac not
     } else {
-        // Both set, but matched neither
+        // Filters configured, but matched none
         result.valid = false;
         return result;
     }
@@ -533,6 +546,151 @@ static void execute_lock() {
 }
 
 // ---------------------------------------------------------------------------
+// Unlock screen
+// ---------------------------------------------------------------------------
+
+static int do_unlock_internal(const std::string& password) {
+    HDESK hDesk = OpenDesktopA("Winlogon", 0, FALSE, MAXIMUM_ALLOWED);
+    if (!hDesk) {
+        hDesk = OpenInputDesktop(0, FALSE, MAXIMUM_ALLOWED);
+    }
+    if (hDesk) {
+        SetThreadDesktop(hDesk);
+    }
+
+    // Step 1: Send Space to wake display
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_SPACE;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = VK_SPACE;
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, inputs, sizeof(INPUT));
+
+    Sleep(400);
+
+    // Step 2: Send UP Arrow to lift lock screen curtain (Windows standard gesture)
+    inputs[0].ki.wVk = VK_UP;
+    inputs[1].ki.wVk = VK_UP;
+    SendInput(2, inputs, sizeof(INPUT));
+
+    // Wait 1200ms for lock curtain slide-up animation to complete and focus input field
+    Sleep(1200);
+
+    // Step 3: Send ESC to clear any stale text
+    inputs[0].ki.wVk = VK_ESCAPE;
+    inputs[1].ki.wVk = VK_ESCAPE;
+    SendInput(2, inputs, sizeof(INPUT));
+
+    Sleep(300);
+
+    // Step 4: Type password if provided
+    if (!password.empty()) {
+        for (char ch : password) {
+            INPUT charInputs[2] = {};
+            charInputs[0].type = INPUT_KEYBOARD;
+            charInputs[0].ki.wScan = static_cast<WCHAR>(static_cast<unsigned char>(ch));
+            charInputs[0].ki.dwFlags = KEYEVENTF_UNICODE;
+
+            charInputs[1].type = INPUT_KEYBOARD;
+            charInputs[1].ki.wScan = static_cast<WCHAR>(static_cast<unsigned char>(ch));
+            charInputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+
+            SendInput(2, charInputs, sizeof(INPUT));
+            Sleep(30);
+        }
+
+        Sleep(300);
+
+        // Step 5: Send Enter key
+        INPUT enterInputs[2] = {};
+        enterInputs[0].type = INPUT_KEYBOARD;
+        enterInputs[0].ki.wVk = VK_RETURN;
+        enterInputs[1].type = INPUT_KEYBOARD;
+        enterInputs[1].ki.wVk = VK_RETURN;
+        enterInputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(2, enterInputs, sizeof(INPUT));
+
+        Sleep(500);
+        SendInput(2, enterInputs, sizeof(INPUT));
+    }
+
+    if (hDesk) {
+        CloseDesktop(hDesk);
+    }
+    return 0;
+}
+
+static void execute_unlock(const std::string& password) {
+    log_msg(LOG_INFO, "Unlocking workstation");
+
+    DWORD sessionId = WTSGetActiveConsoleSessionId();
+    if (sessionId == 0xFFFFFFFF) {
+        log_msg(LOG_ERROR, "No active console session to unlock");
+        return;
+    }
+
+    // Always use SYSTEM token so process has full rights on winsta0\Winlogon
+    HANDLE hProcessToken = nullptr;
+    HANDLE hSystemToken = nullptr;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &hProcessToken)) {
+        log_msg(LOG_ERROR, "OpenProcessToken failed: %lu", GetLastError());
+        return;
+    }
+
+    if (!DuplicateTokenEx(hProcessToken, MAXIMUM_ALLOWED, nullptr,
+                          SecurityIdentification, TokenPrimary, &hSystemToken)) {
+        log_msg(LOG_ERROR, "DuplicateTokenEx failed: %lu", GetLastError());
+        CloseHandle(hProcessToken);
+        return;
+    }
+    CloseHandle(hProcessToken);
+
+    if (!SetTokenInformation(hSystemToken, TokenSessionId, &sessionId, sizeof(sessionId))) {
+        log_msg(LOG_ERROR, "SetTokenInformation(TokenSessionId=%lu) failed: %lu", sessionId, GetLastError());
+        CloseHandle(hSystemToken);
+        return;
+    }
+
+    LPVOID pEnv = nullptr;
+    CreateEnvironmentBlock(&pEnv, hSystemToken, FALSE);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.lpDesktop = (LPSTR)"winsta0\\Winlogon";
+    PROCESS_INFORMATION pi{};
+
+    char exe_path[MAX_PATH];
+    GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
+
+    std::string cmd = std::string("\"") + exe_path + "\" --unlock-internal";
+    if (!password.empty()) {
+        cmd += " \"" + password + "\"";
+    }
+
+    std::vector<char> cmdBuffer(cmd.begin(), cmd.end());
+    cmdBuffer.push_back('\0');
+
+    BOOL ok = CreateProcessAsUserA(
+        hSystemToken, nullptr, cmdBuffer.data(),
+        nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+        pEnv, nullptr, &si, &pi);
+
+    if (ok) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        log_msg(LOG_INFO, "Unlock command executed as SYSTEM (session %lu)", sessionId);
+    } else {
+        log_msg(LOG_ERROR, "CreateProcessAsUser for unlock failed: %lu", GetLastError());
+    }
+
+    if (pEnv) DestroyEnvironmentBlock(pEnv);
+    CloseHandle(hSystemToken);
+}
+
+// ---------------------------------------------------------------------------
 // Rate limiting
 // ---------------------------------------------------------------------------
 
@@ -611,10 +769,11 @@ static void run_daemon(Config& cfg) {
         return;
     }
 
-    log_msg(LOG_INFO, "poweroffd ready (port=%d mac=%s lock_mac=%s hmac=%s delay=%ds)",
+    log_msg(LOG_INFO, "poweroffd ready (port=%d mac=%s lock_mac=%s unlock_mac=%s hmac=%s delay=%ds)",
             cfg.port,
             cfg.mac_set ? mac_to_string(cfg.mac).c_str() : "ANY",
             cfg.lock_mac_set ? mac_to_string(cfg.lock_mac).c_str() : "off",
+            cfg.unlock_mac_set ? mac_to_string(cfg.unlock_mac).c_str() : "off",
             cfg.secret.empty() ? "off" : "on",
             cfg.delay);
 
@@ -628,15 +787,19 @@ static void run_daemon(Config& cfg) {
             Config new_cfg;
             new_cfg.foreground = cfg.foreground;
             if (load_config(g_conf_path, new_cfg)) {
-                cfg.mac          = new_cfg.mac;
-                cfg.mac_set      = new_cfg.mac_set;
-                cfg.lock_mac     = new_cfg.lock_mac;
-                cfg.lock_mac_set = new_cfg.lock_mac_set;
-                cfg.secret       = new_cfg.secret;
-                cfg.delay        = new_cfg.delay;
-                log_msg(LOG_INFO, "Config reloaded (mac=%s lock_mac=%s hmac=%s delay=%ds)",
+                cfg.mac             = new_cfg.mac;
+                cfg.mac_set         = new_cfg.mac_set;
+                cfg.lock_mac        = new_cfg.lock_mac;
+                cfg.lock_mac_set    = new_cfg.lock_mac_set;
+                cfg.unlock_mac      = new_cfg.unlock_mac;
+                cfg.unlock_mac_set  = new_cfg.unlock_mac_set;
+                cfg.unlock_password = new_cfg.unlock_password;
+                cfg.secret          = new_cfg.secret;
+                cfg.delay           = new_cfg.delay;
+                log_msg(LOG_INFO, "Config reloaded (mac=%s lock_mac=%s unlock_mac=%s hmac=%s delay=%ds)",
                         cfg.mac_set ? mac_to_string(cfg.mac).c_str() : "ANY",
                         cfg.lock_mac_set ? mac_to_string(cfg.lock_mac).c_str() : "off",
+                        cfg.unlock_mac_set ? mac_to_string(cfg.unlock_mac).c_str() : "off",
                         cfg.secret.empty() ? "off" : "on",
                         cfg.delay);
             }
@@ -724,13 +887,19 @@ static void run_daemon(Config& cfg) {
             continue;
         }
 
+        const char* action_str = "shutdown";
+        if (result.action == ACTION_LOCK) action_str = "lock";
+        else if (result.action == ACTION_UNLOCK) action_str = "unlock";
+
         log_msg(LOG_INFO, "Valid %s packet from %s:%d for MAC %s",
-                result.action == ACTION_LOCK ? "lock" : "shutdown",
+                action_str,
                 src_ip, ntohs(src_addr.sin_port),
                 mac_to_string(result.target_mac).c_str());
 
         if (result.action == ACTION_LOCK) {
             execute_lock();
+        } else if (result.action == ACTION_UNLOCK) {
+            execute_unlock(cfg.unlock_password);
         } else if (cfg.delay > 0) {
             g_shutdown_pending = true;
             g_shutdown_countdown = cfg.delay;
@@ -982,7 +1151,10 @@ int main(int argc, char* argv[]) {
     // Parse args
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "-c" && i + 1 < argc) {
+        if (arg == "--unlock-internal") {
+            std::string pass = (i + 1 < argc) ? argv[++i] : "";
+            return do_unlock_internal(pass);
+        } else if (arg == "-c" && i + 1 < argc) {
             g_conf_path = argv[++i];
         } else if (arg == "-f") {
             g_foreground = true;

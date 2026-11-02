@@ -11,6 +11,7 @@ Standard WoL magic packet: 6 bytes of `0xFF` followed by the target MAC address 
 - HMAC-SHA256 packet authentication (optional but recommended)
 - MAC address allowlist filtering
 - Lock screen via separate `lock_mac` — send a different MAC to lock instead of shutdown
+- Remote unlock via separate `unlock_mac` (Windows) — send a designated MAC to wake/unlock PC (with optional `unlock_password`)
 - Rate limiting to prevent abuse
 - Configurable shutdown delay with cancellation
 - Cross-platform: Linux (systemd) and Windows (SCM service)
@@ -18,6 +19,7 @@ Standard WoL magic packet: 6 bytes of `0xFF` followed by the target MAC address 
 - Privilege dropping after binding socket (Linux)
 - PID file and signal handling (Linux)
 - Zero external dependencies on Windows (uses Windows CNG for crypto)
+
 
 ## Linux
 
@@ -119,6 +121,8 @@ port = 9
 bind = 0.0.0.0
 mac = AA:BB:CC:DD:EE:FF
 lock_mac = BB:CC:DD:EE:FF:00
+unlock_mac = CC:DD:EE:FF:00:11
+unlock_password = your-windows-password-or-pin
 secret = your-hmac-secret-here
 delay = 5
 ```

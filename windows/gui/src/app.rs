@@ -25,6 +25,7 @@ pub enum ActionKind {
     Wake,
     Shutdown,
     Lock,
+    Unlock,
 }
 
 pub struct App {
@@ -172,6 +173,20 @@ fn run_action(c: &Connection, k: ActionKind) -> String {
             match wol::send(&c.host, c.port, &pkt, false) {
                 Ok(addr) => format!("[{}] lock → {} ({} bytes)", c.name, addr, pkt.len()),
                 Err(e) => format!("[{}] lock failed: {}", c.name, e),
+            }
+        }
+        ActionKind::Unlock => {
+            if c.unlock_mac.trim().is_empty() {
+                return format!("[{}] unlock failed: unlock MAC not set", c.name);
+            }
+            let mac = match wol::parse_mac(&c.unlock_mac) {
+                Ok(m) => m,
+                Err(e) => return format!("[{}] unlock: {}", c.name, e),
+            };
+            let pkt = wol::build_packet(mac, &c.secret);
+            match wol::send(&c.host, c.port, &pkt, false) {
+                Ok(addr) => format!("[{}] unlock → {} ({} bytes)", c.name, addr, pkt.len()),
+                Err(e) => format!("[{}] unlock failed: {}", c.name, e),
             }
         }
     }
@@ -374,6 +389,16 @@ impl eframe::App for App {
                         .changed();
                     ui.end_row();
 
+                    ui.label("Unlock MAC")
+                        .on_hover_text("MAC poweroffd matches to trigger PC unlock");
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut c.unlock_mac)
+                                .hint_text("CC:DD:EE:FF:00:11"),
+                        )
+                        .changed();
+                    ui.end_row();
+
                     ui.label("HMAC secret");
                     changed |= ui
                         .add(
@@ -431,13 +456,22 @@ impl eframe::App for App {
                 let lock = egui::Button::new(egui::RichText::new("Lock").strong())
                     .fill(egui::Color32::from_rgb(70, 70, 130));
                 if ui
-                    .add_sized([110.0, 36.0], lock)
+                    .add_sized([100.0, 36.0], lock)
                     .on_hover_text("Send HMAC-authenticated lock packet to host")
                     .clicked()
                 {
                     dispatch = Some(ActionKind::Lock);
                 }
-                if ui.add_sized([110.0, 36.0], egui::Button::new("Ping")).clicked() {
+                let unlock = egui::Button::new(egui::RichText::new("Unlock").strong())
+                    .fill(egui::Color32::from_rgb(50, 120, 150));
+                if ui
+                    .add_sized([100.0, 36.0], unlock)
+                    .on_hover_text("Send HMAC-authenticated unlock packet to host")
+                    .clicked()
+                {
+                    dispatch = Some(ActionKind::Unlock);
+                }
+                if ui.add_sized([90.0, 36.0], egui::Button::new("Ping")).clicked() {
                     want_ping = true;
                 }
             });
@@ -477,7 +511,7 @@ impl eframe::App for App {
                 let save_btn = egui::Button::new(if self.dirty { "Save" } else { "Saved" });
                 if ui
                     .add_enabled(self.dirty, save_btn)
-                    .on_hover_text("Write connections.json next to the executable")
+                    .on_hover_text("Write connections.json to %APPDATA%\\poweroffd")
                     .clicked()
                 {
                     want_save = true;

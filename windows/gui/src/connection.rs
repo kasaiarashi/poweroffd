@@ -14,6 +14,8 @@ pub struct Connection {
     #[serde(default)]
     pub lock_mac: String,
     #[serde(default)]
+    pub unlock_mac: String,
+    #[serde(default)]
     pub secret: String,
     #[serde(default = "default_port")]
     pub port: u16,
@@ -38,13 +40,15 @@ impl Connection {
             wake_mac: "AA:BB:CC:DD:EE:FF".into(),
             shutdown_mac: "AA:BB:CC:DD:EE:FF".into(),
             lock_mac: String::new(),
+            unlock_mac: String::new(),
             secret: String::new(),
             port: 9,
         }
     }
 }
 
-pub fn config_path() -> PathBuf {
+/// Legacy location: next to the executable (not writable under Program Files).
+fn legacy_path() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let dir = exe
         .parent()
@@ -53,12 +57,20 @@ pub fn config_path() -> PathBuf {
     dir.join("connections.json")
 }
 
+/// Per-user location: %APPDATA%\poweroffd\connections.json
+pub fn config_path() -> PathBuf {
+    match std::env::var_os("APPDATA") {
+        Some(appdata) => PathBuf::from(appdata).join("poweroffd").join("connections.json"),
+        None => legacy_path(),
+    }
+}
+
 pub fn load() -> Vec<Connection> {
-    let path = config_path();
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(_) => return Vec::new(),
-    };
+    let mut bytes = std::fs::read(config_path()).unwrap_or_default();
+    if bytes.is_empty() {
+        // Fall back to a file saved next to the exe by older versions.
+        bytes = std::fs::read(legacy_path()).unwrap_or_default();
+    }
     if bytes.is_empty() {
         return Vec::new();
     }
@@ -69,5 +81,8 @@ pub fn save(list: &[Connection]) -> std::io::Result<()> {
     let path = config_path();
     let json = serde_json::to_vec_pretty(list)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     std::fs::write(path, json)
 }
