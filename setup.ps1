@@ -71,9 +71,31 @@ try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     New-Item -ItemType Directory -Force -Path $ConfigDir  | Out-Null
 
-    # Copy binaries
+    # Copy binaries (daemon, client and GUI)
     Copy-Item "$TmpDir\poweroffd.exe"     "$InstallDir\poweroffd.exe"     -Force
     Copy-Item "$TmpDir\poweroff-send.exe" "$InstallDir\poweroff-send.exe" -Force -ErrorAction SilentlyContinue
+    Copy-Item "$TmpDir\poweroffd-gui.exe" "$InstallDir\poweroffd-gui.exe" -Force -ErrorAction SilentlyContinue
+
+    # Desktop + Start Menu shortcuts for the GUI (all users)
+    $guiExe = "$InstallDir\poweroffd-gui.exe"
+    if (Test-Path $guiExe) {
+        $shell = New-Object -ComObject WScript.Shell
+        $links = @(
+            (Join-Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) "poweroffd.lnk"),
+            (Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "poweroffd.lnk")
+        )
+        foreach ($link in $links) {
+            $sc = $shell.CreateShortcut($link)
+            $sc.TargetPath       = $guiExe
+            $sc.WorkingDirectory = $InstallDir
+            $sc.Description      = "poweroffd - wake, shutdown, and lock remote machines"
+            $sc.IconLocation     = "$guiExe,0"
+            $sc.Save()
+        }
+        Write-Host "==> Created Desktop and Start Menu shortcuts"
+    } else {
+        Write-Host "==> poweroffd-gui.exe not in this release - skipping shortcuts" -ForegroundColor Yellow
+    }
 
     # Config (don't overwrite existing)
     if (-not (Test-Path $ConfigFile)) {
